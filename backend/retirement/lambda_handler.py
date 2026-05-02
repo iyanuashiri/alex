@@ -24,6 +24,10 @@ try:
 except ImportError:
     pass
 
+import env_bootstrap
+
+env_bootstrap.apply_openrouter_openai_aliases()
+
 # Import database package
 from src import Database
 

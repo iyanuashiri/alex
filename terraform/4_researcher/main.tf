@@ -19,6 +19,15 @@ provider "aws" {
 # Data source for current caller identity
 data "aws_caller_identity" "current" {}
 
+locals {
+  openrouter_trim = trim(var.openrouter_api_key)
+  openai_trim     = trim(var.openai_api_key)
+  tracing_api_key = local.openrouter_trim != "" ? local.openrouter_trim : local.openai_trim
+  resolved_openai_base = trim(var.openai_base_url) != "" ? trim(var.openai_base_url) : (
+    local.openrouter_trim != "" && local.openai_trim == "" ? "https://openrouter.ai/api/v1" : ""
+  )
+}
+
 # ========================================
 # ECR Repository
 # ========================================
@@ -140,9 +149,11 @@ resource "aws_apprunner_service" "researcher" {
       image_configuration {
         port = "8000"
         runtime_environment_variables = {
-          OPENAI_API_KEY    = var.openai_api_key
-          ALEX_API_ENDPOINT = var.alex_api_endpoint
-          ALEX_API_KEY      = var.alex_api_key
+          OPENAI_API_KEY      = local.tracing_api_key
+          OPENROUTER_API_KEY  = local.openrouter_trim
+          OPENAI_BASE_URL     = local.resolved_openai_base
+          ALEX_API_ENDPOINT   = var.alex_api_endpoint
+          ALEX_API_KEY        = var.alex_api_key
         }
       }
       image_repository_type = "ECR"

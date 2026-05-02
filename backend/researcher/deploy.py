@@ -14,6 +14,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(override=True)
 
+# Allow OPENROUTER_API_KEY to populate OPENAI_* for App Runner update payload
+_backend_root = Path(__file__).resolve().parent.parent
+if str(_backend_root) not in sys.path:
+    sys.path.insert(0, str(_backend_root))
+from env_bootstrap import apply_openrouter_openai_aliases
+
+apply_openrouter_openai_aliases()
+
 
 def run_command(cmd, capture_output=False, shell=False):
     """Run a command and handle errors."""
@@ -52,21 +60,48 @@ def main():
     print(f"AWS Account: {account_id}")
     print(f"Region: {region}")
 
-    # Get ECR repository URL from Terraform
+    # Resolve ECR repository URL (Terraform/CDK or live ECR)
     print("\nGetting ECR repository URL...")
     terraform_dir = Path(__file__).parent.parent.parent / "terraform" / "4_researcher"
-    original_dir = os.getcwd()
-
-    try:
-        os.chdir(terraform_dir)
-        ecr_url = run_command(
-            ["terraform", "output", "-raw", "ecr_repository_url"], capture_output=True
-        )
-    finally:
-        os.chdir(original_dir)
-
+    ecr_url = None
+    if (terraform_dir / ".terraform").exists():
+        original_dir = os.getcwd()
+        try:
+            os.chdir(terraform_dir)
+            tf_result = subprocess.run(
+                ["terraform", "output", "-raw", "ecr_repository_url"],
+                capture_output=True,
+                text=True,
+            )
+            if tf_result.returncode == 0:
+                ecr_url = tf_result.stdout.strip() or None
+        finally:
+            os.chdir(original_dir)
     if not ecr_url:
-        print("Error: ECR repository not found. Run 'terraform apply' first.")
+        aws_ecr = subprocess.run(
+            [
+                "aws",
+                "ecr",
+                "describe-repositories",
+                "--repository-names",
+                ecr_repository,
+                "--region",
+                region,
+                "--query",
+                "repositories[0].repositoryUri",
+                "--output",
+                "text",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if aws_ecr.returncode == 0:
+            ecr_url = aws_ecr.stdout.strip() or None
+    if not ecr_url:
+        print(
+            "Error: ECR repository not found. Deploy Part 4 (terraform/4_researcher or CDK) or create "
+            f"repository '{ecr_repository}' in {region}."
+        )
         sys.exit(1)
 
     print(f"ECR Repository: {ecr_url}")
@@ -95,7 +130,9 @@ def main():
     timestamp = int(time.time())
     image_tag = f"deploy-{timestamp}"
 
-    # Build Docker image
+    # Build Docker image (context = backend/ so env_bootstrap.py is included)
+    backend_dir = Path(__file__).resolve().parent.parent
+    researcher_dockerfile = Path(__file__).resolve().parent / "Dockerfile"
     print(f"\nBuilding Docker image for linux/amd64 with tag: {image_tag}")
     print("(This ensures compatibility with AWS App Runner)")
     run_command(
@@ -104,11 +141,13 @@ def main():
             "build",
             "--platform",
             "linux/amd64",
+            "-f",
+            str(researcher_dockerfile),
             "-t",
             f"{ecr_repository}:{image_tag}",
-            # Removed --no-cache to use Docker layer caching for faster builds
             ".",
-        ]
+        ],
+        cwd=str(backend_dir),
     )
 
     # Tag for ECR with both unique tag and latest
@@ -123,7 +162,7 @@ def main():
 
     print("\n✅ Docker image pushed successfully!")
     print(
-        "\nNext step: Run 'terraform apply' in terraform/4_researcher to create the App Runner service."
+        "\nNext step: Deploy Part 4 (e.g. terraform apply in terraform/4_researcher or your CDK stack) to create the App Runner service."
     )
 
     # Get App Runner service ARN
@@ -189,6 +228,10 @@ def main():
                                         "Port": "8000",
                                         "RuntimeEnvironmentVariables": {
                                             "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
+                                            "OPENAI_BASE_URL": os.environ.get("OPENAI_BASE_URL", ""),
+                                            "OPENROUTER_API_KEY": os.environ.get(
+                                                "OPENROUTER_API_KEY", ""
+                                            ),
                                             "ALEX_API_KEY": os.environ.get("ALEX_API_KEY", ""),
                                             "ALEX_API_ENDPOINT": os.environ.get(
                                                 "ALEX_API_ENDPOINT", ""
@@ -307,7 +350,7 @@ def main():
                     print("Check the status in the AWS Console.")
             else:
                 print(
-                    "\nApp Runner service not found. You may need to run 'terraform apply' first."
+                    "\nApp Runner service not found. Deploy Part 4 (terraform/4_researcher or CDK) first."
                 )
                 print("\nTo manually deploy:")
                 print("  1. Go to AWS Console > App Runner")

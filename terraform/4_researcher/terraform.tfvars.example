@@ -4,8 +4,12 @@
 # Your AWS region for App Runner (can be any region with App Runner support)
 aws_region = "us-east-1"
 
-# Your OpenAI API key (get from https://platform.openai.com/api-keys)
-openai_api_key = "sk-..."
+# Optional: real OpenAI key for tracing. If you only use OpenRouter, leave empty and set openrouter_api_key.
+openai_api_key = ""
+# OpenRouter API key (optional; used for OPENAI-compatible tracing when openai_api_key is empty)
+openrouter_api_key = ""
+# Optional override for OpenAI-compatible base URL (defaults to OpenRouter when only openrouter is set)
+# openai_base_url = ""
 
 # API endpoint from Part 3 (get from Terraform output or API Gateway console)
 alex_api_endpoint = "https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/prod/ingest"

@@ -13,6 +13,18 @@ import os
 from pathlib import Path
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _cdk_app_dir() -> Path:
+    return _repo_root() / "infra" / "cdk"
+
+
+def use_cdk_for_part7() -> bool:
+    return os.environ.get("ALEX_USE_CDK", "").strip().lower() in ("1", "true", "yes")
+
+
 def run_command(cmd, cwd=None, check=True, capture_output=False):
     """Run a command and optionally capture output."""
     print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
@@ -46,18 +58,34 @@ def confirm_destruction():
 
 
 def get_bucket_name():
-    """Get the S3 bucket name from Terraform output."""
-    terraform_dir = Path(__file__).parent.parent / "terraform" / "7_frontend"
+    """S3 bucket for Part 7 frontend: CDK stack Alex7Frontend output, else Terraform."""
+    raw = subprocess.run(
+        [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            "Alex7Frontend",
+            "--query",
+            "Stacks[0].Outputs[?OutputKey==`S3BucketName`].OutputValue",
+            "--output",
+            "text",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if raw.returncode == 0 and raw.stdout.strip():
+        return raw.stdout.strip()
 
+    terraform_dir = _repo_root() / "terraform" / "7_frontend"
     if not terraform_dir.exists():
         print(f"  ❌ Terraform directory not found: {terraform_dir}")
         return None
 
-    # Get the bucket name from Terraform
     bucket_output = run_command(
         ["terraform", "output", "-raw", "s3_bucket_name"],
         cwd=terraform_dir,
-        capture_output=True
+        capture_output=True,
     )
 
     return bucket_output if bucket_output else None
@@ -105,7 +133,7 @@ def destroy_terraform():
     """Destroy infrastructure with Terraform."""
     print("\n🏗️  Destroying infrastructure with Terraform...")
 
-    terraform_dir = Path(__file__).parent.parent / "terraform" / "7_frontend"
+    terraform_dir = _repo_root() / "terraform" / "7_frontend"
 
     if not terraform_dir.exists():
         print(f"  ❌ Terraform directory not found: {terraform_dir}")
@@ -129,6 +157,47 @@ def destroy_terraform():
         print("  You may need to manually clean up resources in AWS Console")
 
     return success
+
+
+def destroy_cdk_part7():
+    """Destroy CDK stack Alex7Frontend."""
+    print("\n🏗️  Destroying CDK stack Alex7Frontend...")
+    exists = subprocess.run(
+        [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            "Alex7Frontend",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if exists.returncode != 0:
+        print("  ⚠️  CloudFormation stack Alex7Frontend not found; nothing to destroy via CDK")
+        return True
+
+    cdk_dir = _cdk_app_dir()
+    if not cdk_dir.exists():
+        print(f"  ❌ CDK app not found: {cdk_dir}")
+        return False
+    if not (cdk_dir / "node_modules").exists():
+        print("  Installing CDK dependencies (npm install)...")
+        run_command(["npm", "install"], cwd=cdk_dir)
+    run_command(["npm", "run", "build"], cwd=cdk_dir)
+    success = run_command(
+        ["npx", "cdk", "destroy", "Alex7Frontend", "--force"],
+        cwd=cdk_dir,
+    )
+    if success:
+        print("  ✅ CDK stack destroyed successfully")
+    return bool(success)
+
+
+def destroy_part7_infrastructure():
+    if use_cdk_for_part7():
+        return destroy_cdk_part7()
+    return destroy_terraform()
 
 
 def clean_local_artifacts():
@@ -171,8 +240,8 @@ def main():
     if bucket_name:
         empty_s3_bucket(bucket_name)
 
-    # Destroy Terraform infrastructure
-    destroy_terraform()
+    # Destroy Part 7 (Terraform or CDK)
+    destroy_part7_infrastructure()
 
     # Clean local artifacts
     clean_local_artifacts()

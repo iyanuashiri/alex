@@ -1,0 +1,12 @@
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/node_modules
+**/*_lambda.zip
+**/cdk.out
+**/.git
+**/htmlcov
+**/.ruff_cache

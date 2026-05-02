@@ -66,10 +66,24 @@ variable "langfuse_host" {
   default     = "https://us.cloud.langfuse.com"
 }
 
-# OpenAI API key for tracing (required for OpenAI Agents SDK tracing)
+# OpenAI API key for tracing (optional; can be a real OpenAI key or left empty if using OpenRouter only)
 variable "openai_api_key" {
-  description = "OpenAI API key for enabling tracing in OpenAI Agents SDK"
+  description = "OpenAI API key for OpenAI-compatible tracing clients (optional if openrouter_api_key is set)"
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "openrouter_api_key" {
+  description = "OpenRouter API key; when set and openai_api_key is empty, Lambdas receive OPENAI_* aliases for tracing"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "openai_base_url" {
+  description = "Optional OpenAI-compatible API base URL (e.g. https://openrouter.ai/api/v1). If empty and only OpenRouter is set, Terraform sets it automatically."
+  type        = string
+  default     = ""
+  sensitive   = false
 }

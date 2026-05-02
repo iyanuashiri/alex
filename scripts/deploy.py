@@ -16,7 +16,35 @@ import sys
 import os
 import json
 import time
+import shutil
 from pathlib import Path
+
+
+def _npm_exe() -> str:
+    """Windows CreateProcess cannot run `npm` without extension; use npm.cmd."""
+    return "npm.cmd" if os.name == "nt" else "npm"
+
+
+def _ensure_nodejs_on_path() -> None:
+    """Windows + uv: child processes may not inherit a PATH that includes Node/npm."""
+    if shutil.which(_npm_exe()):
+        return
+    candidates = [
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", ""), "nodejs"),
+    ]
+    for p in candidates:
+        if p and os.path.isfile(os.path.join(p, "npm.cmd")):
+            os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+            return
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _cdk_app_dir() -> Path:
+    return _repo_root() / "infra" / "cdk"
 
 
 def run_command(cmd, cwd=None, check=True, capture_output=False, env=None):
@@ -36,16 +64,19 @@ def run_command(cmd, cwd=None, check=True, capture_output=False, env=None):
         return None
 
 
+def use_cdk_for_part7() -> bool:
+    return os.environ.get("ALEX_USE_CDK", "").strip().lower() in ("1", "true", "yes")
+
+
 def check_prerequisites():
     """Check that all required tools are installed."""
     print("🔍 Checking prerequisites...")
+    _ensure_nodejs_on_path()
 
-    # Check for required tools
     tools = {
         "docker": "Docker is required for Lambda packaging",
-        "terraform": "Terraform is required for infrastructure deployment",
-        "npm": "npm is required for building the frontend",
-        "aws": "AWS CLI is required for S3 sync and CloudFront invalidation"
+        _npm_exe(): "npm is required for building the frontend",
+        "aws": "AWS CLI is required for S3 sync and CloudFront invalidation",
     }
 
     for tool, message in tools.items():
@@ -56,12 +87,39 @@ def check_prerequisites():
             print(f"  ❌ {message}")
             sys.exit(1)
 
-    # Check if Docker is running
-    try:
-        run_command(["docker", "info"], capture_output=True)
+    if use_cdk_for_part7():
+        try:
+            run_command(["npx", "cdk", "--version"], capture_output=True, cwd=_cdk_app_dir())
+            print("  ✅ AWS CDK CLI available (npx cdk)")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("  ❌ ALEX_USE_CDK is set but `npx cdk` failed. Install Node/npm and run: cd infra/cdk && npm install")
+            sys.exit(1)
+    else:
+        prefer_cdk = os.environ.get("ALEX_PREFER_CDK_OUTPUTS", "").strip().lower() in ("1", "true", "yes")
+        if prefer_cdk and _describe_stack_outputs("Alex7Frontend"):
+            print("  ✅ ALEX_PREFER_CDK_OUTPUTS: using existing Alex7Frontend stack; Terraform not required")
+        else:
+            try:
+                run_command(["terraform", "--version"], capture_output=True)
+                print("  ✅ terraform is installed")
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print("  ❌ Terraform is required unless you set ALEX_USE_CDK=1 or ALEX_PREFER_CDK_OUTPUTS=1 with Alex7Frontend already deployed")
+                sys.exit(1)
+
+    # Check if Docker is running (optional if an API zip already exists)
+    api_zip = _repo_root() / "backend" / "api" / "api_lambda.zip"
+    docker_ok = subprocess.run(
+        ["docker", "info"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).returncode == 0
+    if docker_ok:
         print("  ✅ Docker is running")
-    except subprocess.CalledProcessError:
-        print("  ❌ Docker is not running. Please start Docker Desktop.")
+    elif api_zip.exists():
+        print("  ⚠️  Docker is not running; will reuse existing api_lambda.zip if packaging is skipped")
+    else:
+        print("  ❌ Docker is not running. Please start Docker Desktop (required to build api_lambda.zip).")
         sys.exit(1)
 
     # Check AWS credentials
@@ -77,17 +135,32 @@ def package_lambda():
     """Package the Lambda function using Docker."""
     print("\n📦 Packaging Lambda function...")
 
-    api_dir = Path(__file__).parent.parent / "backend" / "api"
+    api_dir = _repo_root() / "backend" / "api"
+    lambda_zip = api_dir / "api_lambda.zip"
 
     if not api_dir.exists():
         print(f"  ❌ API directory not found: {api_dir}")
+        sys.exit(1)
+
+    docker_ok = subprocess.run(
+        ["docker", "info"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).returncode == 0
+    if not docker_ok:
+        if lambda_zip.exists():
+            print(f"  ⏭️  Skipping Docker packaging; using existing {lambda_zip}")
+            size_mb = lambda_zip.stat().st_size / (1024 * 1024)
+            print(f"  ✅ Lambda package present ({size_mb:.2f} MB)")
+            return
+        print("  ❌ Docker is not running and no api_lambda.zip found.")
         sys.exit(1)
 
     # Run the packaging script
     run_command(["uv", "run", "package_docker.py"], cwd=api_dir)
 
     # Verify the package was created
-    lambda_zip = api_dir / "api_lambda.zip"
     if not lambda_zip.exists():
         print(f"  ❌ Lambda package not created: {lambda_zip}")
         sys.exit(1)
@@ -96,11 +169,31 @@ def package_lambda():
     print(f"  ✅ Lambda package created: {lambda_zip} ({size_mb:.2f} MB)")
 
 
+def _load_repo_dotenv() -> dict[str, str]:
+    """Parse repo root .env (KEY=value) for merging into frontend production env."""
+    path = _repo_root() / ".env"
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        key = k.strip()
+        val = v.strip().strip('"').strip("'")
+        if key:
+            out[key] = val
+    return out
+
+
 def build_frontend(api_url=None):
     """Build the NextJS frontend."""
     print("\n🎨 Building frontend...")
 
-    frontend_dir = Path(__file__).parent.parent / "frontend"
+    frontend_dir = _repo_root() / "frontend"
 
     if not frontend_dir.exists():
         print(f"  ❌ Frontend directory not found: {frontend_dir}")
@@ -110,7 +203,7 @@ def build_frontend(api_url=None):
     node_modules = frontend_dir / "node_modules"
     if not node_modules.exists():
         print("  Installing dependencies...")
-        run_command(["npm", "install"], cwd=frontend_dir)
+        run_command([_npm_exe(), "install"], cwd=frontend_dir)
 
     # If API URL is provided, create .env.production.local to override .env.local
     if api_url:
@@ -142,8 +235,19 @@ def build_frontend(api_url=None):
         if not api_line_found:
             lines.append(f"\nNEXT_PUBLIC_API_URL={api_url}\n")
 
+        # Merge NEXT_PUBLIC_* from repo .env — Next prerender needs Clerk publishable key, etc.
+        repo_env = _load_repo_dotenv()
+        present = {ln.split("=", 1)[0].strip() for ln in lines if "=" in ln and not ln.strip().startswith("#")}
+        for key, val in repo_env.items():
+            if not key.startswith("NEXT_PUBLIC_"):
+                continue
+            if key in present:
+                continue
+            lines.append(f"{key}={val}\n")
+            present.add(key)
+
         # Write to .env.production.local (highest priority for production builds)
-        with open(env_prod_local, "w") as f:
+        with open(env_prod_local, "w", encoding="utf-8") as f:
             f.writelines(lines)
         print("  ✅ Created .env.production.local with API URL")
 
@@ -152,7 +256,7 @@ def build_frontend(api_url=None):
     # Set NODE_ENV to production to ensure .env.production is used
     build_env = os.environ.copy()
     build_env["NODE_ENV"] = "production"
-    run_command(["npm", "run", "build"], cwd=frontend_dir, env=build_env)
+    run_command([_npm_exe(), "run", "build"], cwd=frontend_dir, env=build_env)
 
     # Verify the build
     out_dir = frontend_dir / "out"
@@ -164,11 +268,42 @@ def build_frontend(api_url=None):
     print(f"  ✅ Frontend built successfully")
 
 
+def _describe_stack_outputs(stack_name: str) -> dict | None:
+    raw = subprocess.run(
+        [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            stack_name,
+            "--query",
+            "Stacks[0].Outputs",
+            "--output",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if raw.returncode != 0 or not raw.stdout.strip():
+        return None
+    try:
+        rows = json.loads(raw.stdout)
+    except json.JSONDecodeError:
+        return None
+    out: dict[str, dict] = {}
+    for row in rows:
+        k = row.get("OutputKey")
+        v = row.get("OutputValue")
+        if k and v is not None:
+            out[k] = {"value": v}
+    return out
+
+
 def deploy_terraform():
     """Deploy infrastructure with Terraform."""
     print("\n🏗️  Deploying infrastructure with Terraform...")
 
-    terraform_dir = Path(__file__).parent.parent / "terraform" / "7_frontend"
+    terraform_dir = _repo_root() / "terraform" / "7_frontend"
 
     if not terraform_dir.exists():
         print(f"  ❌ Terraform directory not found: {terraform_dir}")
@@ -199,11 +334,69 @@ def deploy_terraform():
     return json.loads(outputs)
 
 
+def deploy_cdk_part7():
+    """Deploy Part 7 via AWS CDK (infra/cdk), stack Alex7Frontend."""
+    print("\n🏗️  Deploying Part 7 with AWS CDK (Alex7Frontend)...")
+    cdk_dir = _cdk_app_dir()
+    if not cdk_dir.exists():
+        print(f"  ❌ CDK app not found: {cdk_dir}")
+        sys.exit(1)
+
+    if not (cdk_dir / "node_modules").exists():
+        print("  Installing CDK dependencies (npm install)...")
+        run_command([_npm_exe(), "install"], cwd=cdk_dir)
+
+    print("  Compiling TypeScript (npm run build)...")
+    run_command([_npm_exe(), "run", "build"], cwd=cdk_dir)
+
+    print("  Running cdk deploy Alex7Frontend...")
+    run_command(
+        [
+            "npx",
+            "cdk",
+            "deploy",
+            "Alex7Frontend",
+            "--require-approval",
+            "never",
+        ],
+        cwd=cdk_dir,
+    )
+
+    print("\n  Reading CloudFormation stack outputs...")
+    parsed = _describe_stack_outputs("Alex7Frontend")
+    if not parsed:
+        print("  ❌ Could not read outputs for stack Alex7Frontend")
+        sys.exit(1)
+
+    return {
+        "api_gateway_url": parsed.get("ApiGatewayUrl", {"value": ""}),
+        "cloudfront_url": parsed.get("CloudFrontUrl", {"value": ""}),
+        "s3_bucket_name": parsed.get("S3BucketName", {"value": ""}),
+        "lambda_function_name": parsed.get("LambdaFunctionName", {"value": ""}),
+    }
+
+
+def deploy_part7_infrastructure():
+    """Terraform (default) or CDK when ALEX_USE_CDK=1."""
+    if use_cdk_for_part7():
+        return deploy_cdk_part7()
+    existing = _describe_stack_outputs("Alex7Frontend")
+    if existing and os.environ.get("ALEX_PREFER_CDK_OUTPUTS", "").strip().lower() in ("1", "true", "yes"):
+        print("\n🏗️  Using existing CDK stack Alex7Frontend outputs (ALEX_PREFER_CDK_OUTPUTS=1)...")
+        return {
+            "api_gateway_url": existing.get("ApiGatewayUrl", {"value": ""}),
+            "cloudfront_url": existing.get("CloudFrontUrl", {"value": ""}),
+            "s3_bucket_name": existing.get("S3BucketName", {"value": ""}),
+            "lambda_function_name": existing.get("LambdaFunctionName", {"value": ""}),
+        }
+    return deploy_terraform()
+
+
 def upload_frontend(bucket_name, cloudfront_id):
     """Upload frontend files to S3."""
     print(f"\n📤 Uploading frontend to S3 bucket: {bucket_name}")
 
-    frontend_dir = Path(__file__).parent.parent / "frontend" / "out"
+    frontend_dir = _repo_root() / "frontend" / "out"
 
     if not frontend_dir.exists():
         print(f"  ❌ Frontend build not found: {frontend_dir}")
@@ -311,6 +504,30 @@ def upload_frontend(bucket_name, cloudfront_id):
     print(f"  ✅ CloudFront invalidation created")
 
 
+def run_aurora_schema_migrations():
+    """Create users/accounts/jobs tables on Aurora if missing (RDS Data API)."""
+    print("\n🗄️  Applying Aurora schema (backend/database/run_migrations.py)...")
+    db_dir = _repo_root() / "backend" / "database"
+    parsed = _describe_stack_outputs("Alex5Database")
+    child_env = os.environ.copy()
+    if parsed:
+        arn = (parsed.get("AuroraClusterArn") or {}).get("value") or ""
+        sec = (parsed.get("AuroraSecretArn") or {}).get("value") or ""
+        if arn:
+            child_env["AURORA_CLUSTER_ARN"] = arn
+        if sec:
+            child_env["AURORA_SECRET_ARN"] = sec
+    result = subprocess.run(
+        ["uv", "run", "python", "run_migrations.py"],
+        cwd=str(db_dir),
+        env=child_env,
+    )
+    if result.returncode != 0:
+        print("  ❌ Aurora migrations failed. Fix errors above, then re-run deploy.")
+        sys.exit(1)
+    print("  ✅ Aurora schema is up to date")
+
+
 def display_deployment_info(outputs):
     """Display deployment information without modifying local env files."""
     print("\n📝 Deployment Information")
@@ -338,10 +555,14 @@ def main():
     package_lambda()
 
     # Deploy infrastructure first to get the API URL
-    outputs = deploy_terraform()
+    outputs = deploy_part7_infrastructure()
 
-    # Get the API URL from terraform outputs
-    api_url = outputs["api_gateway_url"]["value"]
+    run_aurora_schema_migrations()
+
+    # Prefer CloudFront as the browser API base so /api/* matches the static site origin.
+    cf = (outputs.get("cloudfront_url") or {}).get("value") or ""
+    gw = (outputs.get("api_gateway_url") or {}).get("value") or ""
+    api_url = cf.strip() if cf.strip() else gw
 
     # Build frontend with the production API URL
     build_frontend(api_url)
@@ -370,7 +591,7 @@ def main():
         print("\n📤 Uploading frontend to S3...")
         run_command([
             "aws", "s3", "sync",
-            str(Path(__file__).parent.parent / "frontend" / "out") + "/",
+            str(_repo_root() / "frontend" / "out") + "/",
             f"s3://{bucket_name}/",
             "--delete"
         ])

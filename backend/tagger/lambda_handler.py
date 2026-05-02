@@ -9,6 +9,17 @@ import asyncio
 import logging
 from typing import List, Dict, Any
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(override=True)
+except ImportError:
+    pass
+
+import env_bootstrap
+
+env_bootstrap.apply_openrouter_openai_aliases()
+
 from src import Database
 from src.schemas import InstrumentCreate
 from agent import tag_instruments, classification_to_db_format

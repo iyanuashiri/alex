@@ -4,9 +4,24 @@ variable "aws_region" {
 }
 
 variable "openai_api_key" {
-  description = "OpenAI API key for the researcher agent"
+  description = "OpenAI API key for tracing / OpenAI-compatible clients (optional if openrouter_api_key is set)"
   type        = string
+  default     = ""
   sensitive   = true
+}
+
+variable "openrouter_api_key" {
+  description = "OpenRouter API key; when set and openai_api_key is empty, App Runner gets OPENAI_* aliases"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "openai_base_url" {
+  description = "Optional OpenAI-compatible base URL; if empty and only OpenRouter is set, defaults to https://openrouter.ai/api/v1"
+  type        = string
+  default     = ""
+  sensitive   = false
 }
 
 variable "alex_api_endpoint" {

@@ -1,0 +1,22 @@
+{
+  "app": "npx ts-node --prefer-ts-exts bin/alex.ts",
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws", "aws-cn"],
+    "vectorBucket": "REPLACE_VECTOR_BUCKET_FROM_PART3",
+    "bedrockModelId": "us.amazon.nova-pro-v1:0",
+    "bedrockRegion": "us-west-2",
+    "sagemakerEndpoint": "alex-embedding-endpoint",
+    "polygonApiKey": "",
+    "polygonPlan": "free",
+    "clerkJwksUrl": "https://example.clerk.accounts.dev/.well-known/jwks.json",
+    "clerkIssuer": "https://example.clerk.accounts.dev",
+    "langfusePublicKey": "",
+    "langfuseSecretKey": "",
+    "langfuseHost": "https://us.cloud.langfuse.com",
+    "openaiApiKey": "",
+    "openrouterApiKey": "",
+    "openaiBaseUrl": ""
+  }
+}

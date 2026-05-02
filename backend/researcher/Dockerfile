@@ -1,6 +1,7 @@
 FROM --platform=linux/amd64 python:3.12-slim
 
-WORKDIR /app
+# Build from backend/ directory: docker build -f researcher/Dockerfile .
+WORKDIR /app/researcher
 
 # Install Node.js
 RUN apt-get update && apt-get install -y \
@@ -15,15 +16,15 @@ RUN npx -y playwright install --with-deps chromium
 # Install Python package manager
 RUN pip install uv
 
-# Copy project files
-COPY pyproject.toml uv.lock ./
+# Copy project files (paths relative to backend/)
+COPY researcher/pyproject.toml researcher/uv.lock ./
 
 # Install Python dependencies during build
-# uv will automatically install packages for the container's architecture (linux/amd64)
 RUN uv sync --frozen --no-install-project
 
-# Copy application code
-COPY *.py ./
+# Shared env helper + application code
+COPY env_bootstrap.py ./
+COPY researcher/*.py ./
 
 # Expose port
 EXPOSE 8000

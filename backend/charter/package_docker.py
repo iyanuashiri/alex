@@ -73,6 +73,7 @@ def package_lambda():
         shutil.copy(charter_dir / "agent.py", package_dir)
         shutil.copy(charter_dir / "templates.py", package_dir)
         shutil.copy(charter_dir / "observability.py", package_dir)
+        shutil.copy(backend_dir / "env_bootstrap.py", package_dir / "env_bootstrap.py")
         
         # Create the zip file
         zip_path = charter_dir / "charter_lambda.zip"

@@ -54,6 +54,7 @@ def main():
 
         # Copy lambda_handler.py to root level for Lambda to find it
         shutil.copy2(api_dir / "lambda_handler.py", package_dir / "lambda_handler.py")
+        shutil.copy2(backend_dir / "env_bootstrap.py", package_dir / "env_bootstrap.py")
 
         # Copy database package
         database_src = backend_dir / "database" / "src"

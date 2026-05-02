@@ -19,6 +19,15 @@ provider "aws" {
 # Data source for current caller identity
 data "aws_caller_identity" "current" {}
 
+locals {
+  openrouter_trim = trim(var.openrouter_api_key)
+  openai_trim     = trim(var.openai_api_key)
+  tracing_api_key = local.openrouter_trim != "" ? local.openrouter_trim : local.openai_trim
+  resolved_openai_base = trim(var.openai_base_url) != "" ? trim(var.openai_base_url) : (
+    local.openrouter_trim != "" && local.openai_trim == "" ? "https://openrouter.ai/api/v1" : ""
+  )
+}
+
 # ========================================
 # SQS Queue for Async Job Processing
 # ========================================
@@ -249,8 +258,10 @@ resource "aws_lambda_function" "planner" {
       # LangFuse observability (optional)
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
+      LANGFUSE_HOST        = var.langfuse_host
+      OPENAI_API_KEY       = local.tracing_api_key
+      OPENROUTER_API_KEY   = local.openrouter_trim
+      OPENAI_BASE_URL      = local.resolved_openai_base
     }
   }
 
@@ -296,8 +307,10 @@ resource "aws_lambda_function" "tagger" {
       # LangFuse observability (optional)
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
+      LANGFUSE_HOST        = var.langfuse_host
+      OPENAI_API_KEY       = local.tracing_api_key
+      OPENROUTER_API_KEY   = local.openrouter_trim
+      OPENAI_BASE_URL      = local.resolved_openai_base
     }
   }
   
@@ -337,8 +350,10 @@ resource "aws_lambda_function" "reporter" {
       # LangFuse observability (optional)
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
+      LANGFUSE_HOST        = var.langfuse_host
+      OPENAI_API_KEY       = local.tracing_api_key
+      OPENROUTER_API_KEY   = local.openrouter_trim
+      OPENAI_BASE_URL      = local.resolved_openai_base
     }
   }
 
@@ -377,8 +392,10 @@ resource "aws_lambda_function" "charter" {
       # LangFuse observability (optional)
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
+      LANGFUSE_HOST        = var.langfuse_host
+      OPENAI_API_KEY       = local.tracing_api_key
+      OPENROUTER_API_KEY   = local.openrouter_trim
+      OPENAI_BASE_URL      = local.resolved_openai_base
     }
   }
 
@@ -417,8 +434,10 @@ resource "aws_lambda_function" "retirement" {
       # LangFuse observability (optional)
       LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
       LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
+      LANGFUSE_HOST        = var.langfuse_host
+      OPENAI_API_KEY       = local.tracing_api_key
+      OPENROUTER_API_KEY   = local.openrouter_trim
+      OPENAI_BASE_URL      = local.resolved_openai_base
     }
   }
 

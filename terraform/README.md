@@ -55,7 +55,7 @@ terraform destroy
 
 Some Terraform configurations require environment variables from your `.env` file:
 
-- `OPENAI_API_KEY` - For the researcher agent (Part 4)
+- `OPENAI_API_KEY` / `OPENROUTER_API_KEY` - Optional tracing / OpenAI-compatible clients (Part 4 / Part 6); inference uses Bedrock
 - `ALEX_API_ENDPOINT` - API Gateway endpoint (from Part 3)
 - `ALEX_API_KEY` - API key for ingestion (from Part 3)
 - `AURORA_CLUSTER_ARN` - Aurora cluster ARN (from Part 5)

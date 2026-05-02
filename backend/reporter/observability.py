@@ -31,18 +31,23 @@ def observe():
 
     # Check if required environment variables exist
     has_langfuse = bool(os.getenv("LANGFUSE_SECRET_KEY"))
-    has_openai = bool(os.getenv("OPENAI_API_KEY"))
+    has_tracing_key = bool(
+        (os.getenv("OPENAI_API_KEY") or "").strip()
+        or (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    )
 
     logger.info(f"🔍 Observability: LANGFUSE_SECRET_KEY exists: {has_langfuse}")
-    logger.info(f"🔍 Observability: OPENAI_API_KEY exists: {has_openai}")
+    logger.info(f"🔍 Observability: tracing API key (OPENAI or OPENROUTER) set: {has_tracing_key}")
 
     if not has_langfuse:
         logger.info("🔍 Observability: LangFuse not configured, skipping setup")
         yield None
         return
 
-    if not has_openai:
-        logger.warning("⚠️  Observability: OPENAI_API_KEY not set, traces may not export")
+    if not has_tracing_key:
+        logger.warning(
+            "⚠️  Observability: OPENAI_API_KEY and OPENROUTER_API_KEY unset, traces may not export"
+        )
 
     # Local variable for the client (no global needed)
     langfuse_client = None

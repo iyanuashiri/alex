@@ -3,7 +3,9 @@ Alex Researcher Service - Investment Advice Agent
 """
 
 import os
+import sys
 import logging
+from pathlib import Path
 from datetime import datetime, UTC
 from typing import Optional
 
@@ -23,6 +25,13 @@ from tools import ingest_financial_document
 
 # Load environment
 load_dotenv(override=True)
+
+_backend_root = Path(__file__).resolve().parent.parent
+if str(_backend_root) not in sys.path:
+    sys.path.insert(0, str(_backend_root))
+import env_bootstrap
+
+env_bootstrap.apply_openrouter_openai_aliases()
 
 app = FastAPI(title="Alex Researcher Service")
 

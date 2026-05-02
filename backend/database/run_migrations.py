@@ -1,37 +1,90 @@
 #!/usr/bin/env python3
 """
-Simple migration runner that executes statements one by one
+Run schema DDL against Aurora via RDS Data API (same path as the API Lambda).
 """
 
 import os
+import subprocess
+import sys
+
 import boto3
-from pathlib import Path
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv(override=True)
 
-# Get config from environment
-cluster_arn = os.environ.get("AURORA_CLUSTER_ARN")
-secret_arn = os.environ.get("AURORA_SECRET_ARN")
-database = os.environ.get("AURORA_DATABASE", "alex")
-region = os.environ.get("DEFAULT_AWS_REGION", "us-east-1")
+region = os.environ.get("DEFAULT_AWS_REGION", os.environ.get("AWS_REGION", "us-east-1"))
+
+
+def _inject_credentials_from_aws_cli_login() -> None:
+    """Boto3 may not see `aws login` sessions; mirror the CLI session into the process env."""
+    try:
+        boto3.client("sts", region_name=region).get_caller_identity()
+        return
+    except NoCredentialsError:
+        pass
+    except BotoCoreError:
+        return
+    proc = subprocess.run(
+        ["aws", "configure", "export-credentials", "--format", "env-no-export"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "").strip()
+        if msg:
+            print(f"aws configure export-credentials failed: {msg[:300]}")
+        return
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip('"').strip("'")
+        if key.startswith("AWS_") and val:
+            os.environ[key] = val
+
+
+_inject_credentials_from_aws_cli_login()
+database = (os.environ.get("AURORA_DATABASE") or "alex").strip()
+cluster_arn = (os.environ.get("AURORA_CLUSTER_ARN") or "").strip()
+secret_arn = (os.environ.get("AURORA_SECRET_ARN") or "").strip()
 
 if not cluster_arn or not secret_arn:
-    raise ValueError("Missing AURORA_CLUSTER_ARN or AURORA_SECRET_ARN in environment variables")
+    try:
+        ssm = boto3.client("ssm", region_name=region)
+        if not cluster_arn:
+            cluster_arn = ssm.get_parameter(Name="/alex/database/cluster-arn")["Parameter"]["Value"]
+        if not secret_arn:
+            secret_arn = ssm.get_parameter(Name="/alex/database/secret-arn")["Parameter"]["Value"]
+        if not os.environ.get("AURORA_DATABASE"):
+            try:
+                database = ssm.get_parameter(Name="/alex/database/database-name")["Parameter"]["Value"]
+            except ClientError:
+                pass
+    except (ClientError, BotoCoreError) as e:
+        print(
+            "Missing AURORA_CLUSTER_ARN / AURORA_SECRET_ARN and could not read SSM "
+            "(/alex/database/*). Deploy Alex5Database or set these in .env.\n"
+            f"Details: {e}"
+        )
+        sys.exit(1)
+
+if not cluster_arn or not secret_arn:
+    print("Missing AURORA_CLUSTER_ARN or AURORA_SECRET_ARN.")
+    sys.exit(1)
+
+try:
+    boto3.client("sts", region_name=region).get_caller_identity()
+except BotoCoreError as e:
+    print(f"No valid AWS credentials ({e}). Run aws login / aws sso login, then retry.")
+    sys.exit(1)
 
 client = boto3.client("rds-data", region_name=region)
 
-# Read migration file
-with open("migrations/001_schema.sql") as f:
-    sql = f.read()
-
-# Define statements in order (since splitting is complex)
+# gen_random_uuid() is built-in on PostgreSQL 13+ (no uuid-ossp extension).
 statements = [
-    # Extension
-    'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"',
-    # Tables
     """CREATE TABLE IF NOT EXISTS users (
         clerk_user_id VARCHAR(255) PRIMARY KEY,
         display_name VARCHAR(255),
@@ -54,7 +107,7 @@ statements = [
         updated_at TIMESTAMP DEFAULT NOW()
     )""",
     """CREATE TABLE IF NOT EXISTS accounts (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         clerk_user_id VARCHAR(255) REFERENCES users(clerk_user_id) ON DELETE CASCADE,
         account_name VARCHAR(255) NOT NULL,
         account_purpose TEXT,
@@ -64,7 +117,7 @@ statements = [
         updated_at TIMESTAMP DEFAULT NOW()
     )""",
     """CREATE TABLE IF NOT EXISTS positions (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         account_id UUID REFERENCES accounts(id) ON DELETE CASCADE,
         symbol VARCHAR(20) REFERENCES instruments(symbol),
         quantity DECIMAL(20,8) NOT NULL,
@@ -74,7 +127,7 @@ statements = [
         UNIQUE(account_id, symbol)
     )""",
     """CREATE TABLE IF NOT EXISTS jobs (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         clerk_user_id VARCHAR(255) REFERENCES users(clerk_user_id) ON DELETE CASCADE,
         job_type VARCHAR(50) NOT NULL,
         status VARCHAR(20) DEFAULT 'pending',
@@ -89,13 +142,11 @@ statements = [
         completed_at TIMESTAMP,
         updated_at TIMESTAMP DEFAULT NOW()
     )""",
-    # Indexes
     "CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(clerk_user_id)",
     "CREATE INDEX IF NOT EXISTS idx_positions_account ON positions(account_id)",
     "CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(clerk_user_id)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)",
-    # Function for timestamps
     """CREATE OR REPLACE FUNCTION update_updated_at_column()
     RETURNS TRIGGER AS $$
     BEGIN
@@ -103,17 +154,16 @@ statements = [
         RETURN NEW;
     END;
     $$ LANGUAGE plpgsql""",
-    # Triggers
     """CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()""",
+        FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()""",
     """CREATE TRIGGER update_instruments_updated_at BEFORE UPDATE ON instruments
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()""",
+        FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()""",
     """CREATE TRIGGER update_accounts_updated_at BEFORE UPDATE ON accounts
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()""",
+        FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()""",
     """CREATE TRIGGER update_positions_updated_at BEFORE UPDATE ON positions
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()""",
+        FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()""",
     """CREATE TRIGGER update_jobs_updated_at BEFORE UPDATE ON jobs
-        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()""",
+        FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()""",
 ]
 
 print("🚀 Running database migrations...")
@@ -123,7 +173,6 @@ success_count = 0
 error_count = 0
 
 for i, stmt in enumerate(statements, 1):
-    # Get a description of what we're creating
     stmt_type = "statement"
     if "CREATE TABLE" in stmt.upper():
         stmt_type = "table"
@@ -131,39 +180,37 @@ for i, stmt in enumerate(statements, 1):
         stmt_type = "index"
     elif "CREATE TRIGGER" in stmt.upper():
         stmt_type = "trigger"
-    elif "CREATE FUNCTION" in stmt.upper():
+    elif "CREATE FUNCTION" in stmt.upper() or "CREATE OR REPLACE FUNCTION" in stmt.upper():
         stmt_type = "function"
-    elif "CREATE EXTENSION" in stmt.upper():
-        stmt_type = "extension"
 
-    # First non-empty line for display
     first_line = next(l for l in stmt.split("\n") if l.strip())[:60]
     print(f"\n[{i}/{len(statements)}] Creating {stmt_type}...")
     print(f"    {first_line}...")
 
     try:
-        response = client.execute_statement(
+        client.execute_statement(
             resourceArn=cluster_arn, secretArn=secret_arn, database=database, sql=stmt
         )
-        print(f"    ✅ Success")
+        print("    ✅ Success")
         success_count += 1
 
     except ClientError as e:
         error_msg = e.response["Error"]["Message"]
         if "already exists" in error_msg.lower():
-            print(f"    ⚠️  Already exists (skipping)")
+            print("    ⚠️  Already exists (skipping)")
             success_count += 1
         else:
-            print(f"    ❌ Error: {error_msg[:100]}")
+            print(f"    ❌ Error: {error_msg[:200]}")
             error_count += 1
+    except BotoCoreError as e:
+        print(f"    ❌ AWS error: {e}")
+        error_count += 1
 
 print("\n" + "=" * 50)
 print(f"Migration complete: {success_count} successful, {error_count} errors")
 
 if error_count == 0:
     print("\n✅ All migrations completed successfully!")
-    print("\n📝 Next steps:")
-    print("1. Load seed data: uv run seed_data.py")
-    print("2. Test database operations: uv run test_db.py")
 else:
-    print(f"\n⚠️  Some statements failed. Check errors above.")
+    print("\n⚠️  Some statements failed. Check errors above.")
+    sys.exit(1)

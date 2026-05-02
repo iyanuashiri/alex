@@ -73,6 +73,7 @@ def package_lambda():
         shutil.copy(retirement_dir / "agent.py", package_dir)
         shutil.copy(retirement_dir / "templates.py", package_dir)
         shutil.copy(retirement_dir / "observability.py", package_dir)
+        shutil.copy(backend_dir / "env_bootstrap.py", package_dir / "env_bootstrap.py")
         
         # Create the zip file
         zip_path = retirement_dir / "retirement_lambda.zip"

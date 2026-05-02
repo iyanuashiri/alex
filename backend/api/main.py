@@ -4,8 +4,10 @@ Handles all API routes with Clerk JWT authentication
 """
 
 import os
+import sys
 import json
 import logging
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
@@ -31,6 +33,13 @@ from src.schemas import (
 
 # Load environment variables
 load_dotenv(override=True)
+
+_backend_root = Path(__file__).resolve().parent.parent
+if str(_backend_root) not in sys.path:
+    sys.path.insert(0, str(_backend_root))
+import env_bootstrap
+
+env_bootstrap.apply_openrouter_openai_aliases()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
